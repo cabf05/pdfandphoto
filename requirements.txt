@@ -1,0 +1,6 @@
+streamlit
+PyMuPDF
+pillow>=9.1.0
+pikepdf
+opencv-python
+numpy
