@@ -6,8 +6,6 @@ import io
 import pikepdf
 import tempfile
 import os
-import cv2
-import numpy as np
 
 # Configurações gerais
 MAX_PDF_KB = 1200
@@ -18,7 +16,7 @@ DEFAULT_DPI = 150
 DEFAULT_QUALITY = 50
 
 st.set_page_config(page_title="Doc & Photo Tool", layout="wide")
-st.title("🗎 Compressor de PDF & 📸 Gerador de Foto Passe (sem OpenAI)")
+st.title("🗎 Compressor de PDF & 📸 Gerador de Foto Passe (sem OpenCV)")
 
 tab1, tab2 = st.tabs(["📑 Compressor de PDF", "📸 Gerador de Foto Passe"])
 
@@ -79,80 +77,71 @@ with tab1:
         st.write(f"🔄 Tamanho final: **{size_kb:.1f} KB**")
         if size_kb > MAX_PDF_KB:
             st.warning(f"Ainda acima de {MAX_PDF_KB} KB. Ajuste DPI/qualidade.")
-        st.download_button("⬇️ Baixar PDF comprimido", comp.getvalue(),
-                           "compressed.pdf", "application/pdf")
+        st.download_button("⬇️ Baixar PDF comprimido",
+                           comp.getvalue(), "compressed.pdf", "application/pdf")
 
 #################################
 # Aba 2: Gerador de Foto Passe
 #################################
 with tab2:
-    st.header("Geração de Foto Tipo Passe (Local)")
+    st.header("Geração de Foto Tipo Passe (Central Crop)")
     st.write(
         "- JPEG, ≤150 KB\n"
         "- Máximo 2.5×3.5″ → 750×1050 px\n"
-        "- Full-front head & shoulders, rosto centralizado"
+        "- Crop central (rostos devem estar centrados na foto original)"
     )
-    uploaded_img = st.file_uploader(
-        "Envie uma foto JPEG", type=["jpg","jpeg"]
-    )
+    uploaded_img = st.file_uploader("Envie uma foto JPEG", type=["jpg","jpeg"])
     if uploaded_img:
         data = uploaded_img.read()
         if len(data) > MAX_PHOTO_KB*1024:
             st.error("Arquivo maior que 150 KB.")
             st.stop()
 
-        # Abre imagem e converte para RGB
         try:
             img = Image.open(io.BytesIO(data)).convert("RGB")
         except Exception:
             st.error("Não foi possível ler a imagem.")
             st.stop()
 
-        # Detecta rosto
-        img_np = np.array(img)
-        gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
-        cascade = cv2.CascadeClassifier(
-            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-        )
-        faces = cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5)
-        if len(faces) == 0:
-            st.error("Nenhum rosto detectado. Use uma foto com rosto de frente.")
-            st.stop()
+        # mostra original para conferência
+        st.image(img, caption="Original (confirme rosto centralizado)")
 
-        # Escolhe o maior rosto detectado
-        x,y,w,h = max(faces, key=lambda b: b[2]*b[3])
-        # Expande a caixa para incluir ombros (1.5× altura do rosto)
-        pad_h = int(0.5 * h)
-        y0 = max(0, y - pad_h//2)
-        y1 = min(img.height, y + h + pad_h)
-        x0 = max(0, x - w//4)
-        x1 = min(img.width, x + w + w//4)
-        crop = img.crop((x0, y0, x1, y1))
+        # Faz crop central com proporção TARGET_PHOTO_PX
+        orig_w, orig_h = img.size
+        target_ratio = TARGET_PHOTO_PX[0] / TARGET_PHOTO_PX[1]
+        orig_ratio = orig_w / orig_h
 
-        # Redimensiona e pad para TARGET_PHOTO_PX
-        crop.thumbnail(TARGET_PHOTO_PX, Image.Resampling.LANCZOS)
-        bg = Image.new("RGB", TARGET_PHOTO_PX, (255,255,255))
-        bx = (TARGET_PHOTO_PX[0] - crop.width)//2
-        by = (TARGET_PHOTO_PX[1] - crop.height)//2
-        bg.paste(crop, (bx, by))
+        if orig_ratio > target_ratio:
+            # imagem muito larga: calcula largura cropped
+            new_w = int(orig_h * target_ratio)
+            new_h = orig_h
+        else:
+            # imagem muito alta: calcula altura cropped
+            new_w = orig_w
+            new_h = int(orig_w / target_ratio)
 
-        st.image(bg, caption="Preview", use_column_width=False)
+        left = (orig_w - new_w) // 2
+        top = (orig_h - new_h) // 2
+        crop = img.crop((left, top, left + new_w, top + new_h))
 
-        # Ajusta qualidade para ficar ≤150 KB
+        # redimensiona exatamente para TARGET_PHOTO_PX
+        cropped = crop.resize(TARGET_PHOTO_PX, resample=Image.Resampling.LANCZOS)
+        st.image(cropped, caption="Preview do Passe", use_column_width=False)
+
+        # Ajusta qualidade até ≤150 KB
         buf = io.BytesIO()
         qual = 90
         while qual >= 10:
             buf.seek(0); buf.truncate(0)
-            bg.save(buf, format="JPEG", quality=qual, optimize=True)
-            size = buf.tell()
-            if size <= MAX_PHOTO_KB*1024:
+            cropped.save(buf, format="JPEG", quality=qual, optimize=True)
+            if buf.tell() <= MAX_PHOTO_KB*1024:
                 break
             qual -= 10
         buf.seek(0)
-        final_size_kb = buf.getbuffer().nbytes / 1024
-        st.write(f"Tamanho final: **{final_size_kb:.1f} KB** (qualidade {qual})")
-        if final_size_kb > MAX_PHOTO_KB:
-            st.warning("Não foi possível atingir ≤150 KB. Considere recortar / usar outra foto.")
+        final_kb = buf.getbuffer().nbytes / 1024
+        st.write(f"Tamanho final: **{final_kb:.1f} KB** (qualidade {qual})")
+        if final_kb > MAX_PHOTO_KB:
+            st.warning("Não atingiu ≤150 KB. Use outra foto ou recorte manualmente.")
 
         st.download_button(
             "⬇️ Baixar Foto Tipo Passe",
